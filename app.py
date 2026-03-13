@@ -1,1 +1,126 @@
-{"nbformat":4,"nbformat_minor":0,"metadata":{"colab":{"provenance":[],"mount_file_id":"1G1pjOw72ru8wTAzLXoplF-5L9EW4FYn5","authorship_tag":"ABX9TyOpF8nUP/4VRjAr6CCgSDcj"},"kernelspec":{"name":"python3","display_name":"Python 3"},"language_info":{"name":"python"}},"cells":[{"cell_type":"code","source":["import streamlit as st\n","import yfinance as yf\n","import pandas as pd\n","import plotly.graph_objects as go\n","from datetime import datetime, timedelta\n","\n","st.set_page_config(page_title=\"我的台股分析\", page_icon=\"📈\", layout=\"wide\")\n","st.title(\"📈 我的台股投資分析\")\n","\n","# 側邊欄輸入股票代碼\n","st.sidebar.header(\"🔍 查詢股票\")\n","ticker_input = st.sidebar.text_input(\"輸入台股代碼（例如：2330）\", value=\"2330\")\n","days = st.sidebar.slider(\"查詢天數\", 30, 365, 180)\n","\n","ticker = ticker_input + \".TW\"\n","end = datetime.today()\n","start = end - timedelta(days=days)\n","\n","@st.cache_data(ttl=3600)\n","def get_data(ticker, start, end):\n","    df = yf.download(ticker, start=start, end=end)\n","    # 若欄位是 MultiIndex，壓平成單層\n","    if isinstance(df.columns, pd.MultiIndex):\n","        df.columns = df.columns.get_level_values(0)\n","    return df\n","\n","df = get_data(ticker, start, end)\n","\n","if df.empty:\n","    st.error(\"找不到此股票，請確認代碼是否正確\")\n","else:\n","    # ── 取出純數值，避免 Series format 錯誤 ──────────────────────\n","    last_price  = float(df['Close'].iloc[-1])\n","    prev_price  = float(df['Close'].iloc[-2])\n","    last_volume = float(df['Volume'].iloc[-1])\n","\n","    # 基本資訊\n","    info = yf.Ticker(ticker).info\n","    col1, col2, col3, col4 = st.columns(4)\n","    col1.metric(\"公司名稱\", info.get('longName', ticker_input))\n","    col2.metric(\"目前股價\", f\"NT${last_price:.1f}\")\n","\n","    change     = last_price - prev_price\n","    change_pct = change / prev_price * 100\n","    col3.metric(\"漲跌\", f\"{change:+.1f}\", f\"{change_pct:+.2f}%\")\n","    col4.metric(\"成交量\", f\"{int(last_volume / 1000)}張\")\n","\n","    # K 線圖\n","    st.subheader(\"📊 K線圖\")\n","    fig = go.Figure()\n","    fig.add_trace(go.Candlestick(\n","        x=df.index,\n","        open=df['Open'],\n","        high=df['High'],\n","        low=df['Low'],\n","        close=df['Close'],\n","        name=\"K線\"\n","    ))\n","\n","    # 均線\n","    df['MA20'] = df['Close'].rolling(20).mean()\n","    df['MA60'] = df['Close'].rolling(60).mean()\n","    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], name=\"20日均線\", line=dict(color='orange')))\n","    fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], name=\"60日均線\", line=dict(color='blue')))\n","    fig.update_layout(height=500, xaxis_rangeslider_visible=False)\n","    st.plotly_chart(fig, use_container_width=True)\n","\n","    # 技術指標（簡易買賣點）\n","    st.subheader(\"🎯 簡易買賣點判斷\")\n","    last_close  = float(df['Close'].iloc[-1])\n","    prev_close  = float(df['Close'].iloc[-2])\n","    ma20        = float(df['MA20'].iloc[-1])\n","    ma60        = float(df['MA60'].iloc[-1])\n","    prev_ma20   = float(df['MA20'].iloc[-2])\n","\n","    signals = []\n","    if last_close > ma20 and prev_close <= prev_ma20:\n","        signals.append((\"✅ 黃金交叉\", \"股價突破20日均線，短線偏多\", \"買進參考\"))\n","    if last_close < ma20 and prev_close >= prev_ma20:\n","        signals.append((\"⚠️ 死亡交叉\", \"股價跌破20日均線，短線偏空\", \"賣出參考\"))\n","    if last_close > ma20 and last_close > ma60:\n","        signals.append((\"📈 多頭排列\", \"股價在雙均線之上，趨勢向好\", \"持有\"))\n","    if last_close < ma20 and last_close < ma60:\n","        signals.append((\"📉 空頭排列\", \"股價在雙均線之下，趨勢偏弱\", \"觀望\"))\n","\n","    if signals:\n","        for icon, desc, action in signals:\n","            st.info(f\"{icon}　{desc}　→　**{action}**\")\n","    else:\n","        st.info(\"目前無明確信號，持續觀察中\")\n","\n","    # 估值參考\n","    st.subheader(\"💰 估值參考\")\n","    pe = info.get('trailingPE')\n","    pb = info.get('priceToBook')\n","    dy = info.get('dividendYield')\n","\n","    c1, c2, c3 = st.columns(3)\n","    c1.metric(\"本益比 (PE)\",   f\"{pe:.1f}\"      if pe else \"無資料\")\n","    c2.metric(\"股價淨值比 (PB)\", f\"{pb:.2f}\"    if pb else \"無資料\")\n","    c3.metric(\"股息殖利率\",    f\"{dy*100:.2f}%\" if dy else \"無資料\")\n","\n","    # 近期資料表\n","    st.subheader(\"📋 近10日資料\")\n","    display_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].tail(10).sort_index(ascending=False).copy()\n","    display_df.columns = ['開盤', '最高', '最低', '收盤', '成交量']\n","    # 成交量單獨格式化，其餘顯示小數一位\n","    st.dataframe(\n","        display_df.style.format({\n","            '開盤': '{:.1f}',\n","            '最高': '{:.1f}',\n","            '最低': '{:.1f}',\n","            '收盤': '{:.1f}',\n","            '成交量': '{:,.0f}',\n","        }),\n","        use_container_width=True\n","    )\n",""],"metadata":{"colab":{"base_uri":"https://localhost:8080/"},"id":"b5PyVLrOc1dO","executionInfo":{"status":"ok","timestamp":1773376411997,"user_tz":-480,"elapsed":633,"user":{"displayName":"Chien-Ming Wang","userId":"07770583684496771988"}},"outputId":"29f7626f-4fb3-476a-cc41-d064acb35c00"},"execution_count":4,"outputs":[{"output_type":"stream","name":"stderr","text":["2026-03-13 04:33:30.770 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.771 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.773 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.774 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.775 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.776 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.776 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.777 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.778 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.778 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.779 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.779 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.780 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.781 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.781 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.782 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.782 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.783 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.783 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.784 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:30.785 No runtime found, using MemoryCacheStorageManager\n","2026-03-13 04:33:30.787 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","/tmp/ipykernel_183/1986606775.py:21: FutureWarning:\n","\n","YF.download() has changed argument auto_adjust default to True\n","\n","[*********************100%***********************]  1 of 1 completed\n","2026-03-13 04:33:31.269 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.270 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.271 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.272 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.273 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.274 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.276 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.278 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.279 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.280 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.281 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.282 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.284 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.284 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.285 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.286 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.286 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.287 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.287 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.288 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.299 Please replace `use_container_width` with `width`.\n","\n","`use_container_width` will be removed after 2025-12-31.\n","\n","For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.\n","2026-03-13 04:33:31.302 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.304 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.305 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.306 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.308 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.308 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.309 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.310 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.310 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.311 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.311 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.312 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.313 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.314 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.314 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.315 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.315 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.316 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.317 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.317 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.318 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.319 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.320 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.320 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.322 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.322 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.322 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.323 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.324 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.324 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.329 Please replace `use_container_width` with `width`.\n","\n","`use_container_width` will be removed after 2025-12-31.\n","\n","For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.\n","2026-03-13 04:33:31.330 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.336 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.337 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n","2026-03-13 04:33:31.337 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.\n"]}]}]}
+# -*- coding: utf-8 -*-
+"""app.ipynb
+
+Automatically generated by Colab.
+
+Original file is located at
+    https://colab.research.google.com/drive/1G1pjOw72ru8wTAzLXoplF-5L9EW4FYn5
+"""
+
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+
+st.set_page_config(page_title="我的台股分析", page_icon="📈", layout="wide")
+st.title("📈 我的台股投資分析")
+
+# 側邊欄輸入股票代碼
+st.sidebar.header("🔍 查詢股票")
+ticker_input = st.sidebar.text_input("輸入台股代碼（例如：2330）", value="2330")
+days = st.sidebar.slider("查詢天數", 30, 365, 180)
+
+ticker = ticker_input + ".TW"
+end = datetime.today()
+start = end - timedelta(days=days)
+
+@st.cache_data(ttl=3600)
+def get_data(ticker, start, end):
+    df = yf.download(ticker, start=start, end=end)
+    # 若欄位是 MultiIndex，壓平成單層
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+df = get_data(ticker, start, end)
+
+if df.empty:
+    st.error("找不到此股票，請確認代碼是否正確")
+else:
+    # ── 取出純數值，避免 Series format 錯誤 ──────────────────────
+    last_price  = float(df['Close'].iloc[-1])
+    prev_price  = float(df['Close'].iloc[-2])
+    last_volume = float(df['Volume'].iloc[-1])
+
+    # 基本資訊
+    info = yf.Ticker(ticker).info
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("公司名稱", info.get('longName', ticker_input))
+    col2.metric("目前股價", f"NT${last_price:.1f}")
+
+    change     = last_price - prev_price
+    change_pct = change / prev_price * 100
+    col3.metric("漲跌", f"{change:+.1f}", f"{change_pct:+.2f}%")
+    col4.metric("成交量", f"{int(last_volume / 1000)}張")
+
+    # K 線圖
+    st.subheader("📊 K線圖")
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name="K線"
+    ))
+
+    # 均線
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA60'] = df['Close'].rolling(60).mean()
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], name="20日均線", line=dict(color='orange')))
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], name="60日均線", line=dict(color='blue')))
+    fig.update_layout(height=500, xaxis_rangeslider_visible=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 技術指標（簡易買賣點）
+    st.subheader("🎯 簡易買賣點判斷")
+    last_close  = float(df['Close'].iloc[-1])
+    prev_close  = float(df['Close'].iloc[-2])
+    ma20        = float(df['MA20'].iloc[-1])
+    ma60        = float(df['MA60'].iloc[-1])
+    prev_ma20   = float(df['MA20'].iloc[-2])
+
+    signals = []
+    if last_close > ma20 and prev_close <= prev_ma20:
+        signals.append(("✅ 黃金交叉", "股價突破20日均線，短線偏多", "買進參考"))
+    if last_close < ma20 and prev_close >= prev_ma20:
+        signals.append(("⚠️ 死亡交叉", "股價跌破20日均線，短線偏空", "賣出參考"))
+    if last_close > ma20 and last_close > ma60:
+        signals.append(("📈 多頭排列", "股價在雙均線之上，趨勢向好", "持有"))
+    if last_close < ma20 and last_close < ma60:
+        signals.append(("📉 空頭排列", "股價在雙均線之下，趨勢偏弱", "觀望"))
+
+    if signals:
+        for icon, desc, action in signals:
+            st.info(f"{icon}　{desc}　→　**{action}**")
+    else:
+        st.info("目前無明確信號，持續觀察中")
+
+    # 估值參考
+    st.subheader("💰 估值參考")
+    pe = info.get('trailingPE')
+    pb = info.get('priceToBook')
+    dy = info.get('dividendYield')
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("本益比 (PE)",   f"{pe:.1f}"      if pe else "無資料")
+    c2.metric("股價淨值比 (PB)", f"{pb:.2f}"    if pb else "無資料")
+    c3.metric("股息殖利率",    f"{dy*100:.2f}%" if dy else "無資料")
+
+    # 近期資料表
+    st.subheader("📋 近10日資料")
+    display_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].tail(10).sort_index(ascending=False).copy()
+    display_df.columns = ['開盤', '最高', '最低', '收盤', '成交量']
+    # 成交量單獨格式化，其餘顯示小數一位
+    st.dataframe(
+        display_df.style.format({
+            '開盤': '{:.1f}',
+            '最高': '{:.1f}',
+            '最低': '{:.1f}',
+            '收盤': '{:.1f}',
+            '成交量': '{:,.0f}',
+        }),
+        use_container_width=True
+    )
